@@ -118,6 +118,7 @@ ipython_config.py
 .pdm-build/
 
 build/
+results/
 
 # pixi
 #   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
