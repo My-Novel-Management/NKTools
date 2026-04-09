@@ -10,6 +10,9 @@ TARGET_WORD = "（喘ぎ）"
 TARGET_WORD_FELA = "（フェラ音）"
 TARGET_WORD_OHO = "（オホ声）"
 
+# （鳴き声） または （鳴き声1） または （鳴き声１） にマッチ
+# pattern = r"（鳴き声[1１]?）"
+
 ONOM_FILENAME = "data/moan.txt"
 FELLA_FILENAME = "data/fella.txt"
 OHO_FILENAME = "data/oho_moan.txt"

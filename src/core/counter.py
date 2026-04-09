@@ -3,6 +3,7 @@ import glob
 import re
 import pandas as pd
 from dataclasses import dataclass, field
+from collections import defaultdict
 
 class CountType:
     TOTAL = 'total'
@@ -25,13 +26,14 @@ class CharCounter:
 
     EXTENTIONS = ['*.txt', '*.md']
     PUNCTUATIONS = ['、', '。', '.', ',']
+    PARENTHESES = ['(', ')', '「', '」', '『', '』', '【', '】']
 
-    def count_characters(self, output_file: str, exclue_chars: list):
+    def count_characters(self, output_file: str, exclude_chars: list):
         """
         対象のフォルダ内のファイルの文字数を計算する
         """
         # 記号除外用の正規表現パターン作成
-        exclude_pattern = self._get_exclue_pattern(exclude_chars)
+        exclude_pattern = self._get_exclude_pattern(exclude_chars)
 
         files = []
         states = []
@@ -43,26 +45,36 @@ class CharCounter:
                     with open(file_path, 'r', encoding='utf-8') as file:
                         content = file.read()
                         # 個別ファイルの文字数状況取得
-                        state = self._get_count_state(file_path, content, exclude_pattern)
+                        state = self._get_count_state(file_path, content, exclude_pattern, is_skip_dialogues=False)
                         # 状態をリストに追加
                         states.append(state)
                 except Exception as e:
                     print(f"エラー: {file_path} - {e}")
         if states:
             # 総合stateを算出し、保存
-            total_state = CountState(count_type=CountType.TOTAL, file_name=self.base_path)
-            total_state.total = sum(s.total for s in states)
-            total_state.exclude_space = sum(s.exclude_space for s in states)
-            total_state.exclude_togaki = sum(s.exclude_togaki for s in states)
-            total_state.exclude_marks = sum(s.exclude_marks for s in states)
+            total_state = self._total_count_of_states(states)
+            # TODO: Speaker毎のTotalを計算する
             states.append(total_state)
             df = pd.DataFrame(states)
             # 保存する
             save_path = f"{self.save_dir}/{output_file}.csv"
             df.to_csv(save_path, index=False, encoding="utf-8-sig")
             print(df)
+            # キャラ別集計のみを別のCSVで出す場合
+            speaker_data = []
+            for speaker, s in total_state.dialogues.items():
+                speaker_data.append({
+                    "Speaker": speaker,
+                    "Total": s.total,
+                    "Ex_Space": s.exclude_space, # 空白抜き
+                    "Ex_Togaki": s.exclude_togaki, # ト書き抜き
+                    "Ex_Marks": s.exclude_marks # 記号抜き
+                })
+            df_speakers = pd.DataFrame(speaker_data)
+            df_speakers.to_csv(f"{self.save_dir}/speaker_totals.csv", index=False, encoding="utf-8-sig")
+            print(df_speakers)
 
-    def _get_count_state(self, file_path: str, content: str, exclude_pattern: str) -> CountState:
+    def _get_count_state(self, file_path: str, content: str, exclude_pattern: str, is_skip_dialogues: bool=True) -> CountState:
         """コンテンツの文字数状況の取得"""
         # 1. 総文字数
         total_char_count = self._get_total_char_count(content)
@@ -72,6 +84,10 @@ class CharCounter:
         ex_togai_count = len(self._get_exclude_togakis(content))
         # 4. 句読点記号除去文字数
         ex_marks_count = len(self._get_exclude_all_marks(content, exclude_pattern))
+        # 5. 話者別文字数カウント（記号、句読点除去）
+        dialogues = {}
+        if not is_skip_dialogues:
+            dialogues = self._count_each_charas_dialogue(file_path, content, exclude_pattern)
         return CountState(
             count_type=CountType.INDIVIDUAL,
             file_name=file_path,
@@ -79,35 +95,84 @@ class CharCounter:
             exclude_space=ex_space_count,
             exclude_togaki=ex_togai_count,
             exclude_marks=ex_marks_count,
-            dialogues={}
+            dialogues=dialogues
         )
+    
+    def _total_count_of_states(self, state_list: list[CountState]) -> CountState:
+        """すべてのStateの合計をCountStateにして返す（dialoguesの集計も行わせる）"""
+        total_state = CountState(count_type=CountType.TOTAL, file_name=self.base_path)
+        total_state.total = sum(s.total for s in state_list)
+        total_state.exclude_space = sum(s.exclude_space for s in state_list)
+        total_state.exclude_togaki = sum(s.exclude_togaki for s in state_list)
+        total_state.exclude_marks = sum(s.exclude_marks for s in state_list)
+        
+        # キャラ別合計を算出
+        total_state.dialogues = self._aggregate_dialogues(state_list)
+        
+        return total_state
+
+    def _count_each_charas_dialogue(self, file_path: str, content: str, exclude_pattern: str) -> dict:
+        """キャラ毎に分割して、それの当該文字数をカウントした辞書を返す"""
+        # キャラ毎の文字数を収める辞書作成
+        char_contents = defaultdict(str)
+        current_speaker = "指定なし" # キャラ指定外のカウント用
+        # 行分割してキャラ毎に分ける
+        lines = content.splitlines(keepends=True)
+        for line in lines:
+            stripped_line = line.strip()
+            # 空行は飛ばす
+            if not stripped_line:
+                continue
+            # キャラクター行判定（//キャラ：）
+            name_match = re.match(r'^//(.+?)[:：]', stripped_line)
+            if name_match:
+                current_speaker = name_match.group(1)
+                continue # 名前行そのものはここで削除
+
+            # 現在のスピーカーに追加
+            char_contents[current_speaker] += line
+        # 分割されたスピーカー毎に、State処理
+        char_counts = {}
+        for speaker, cont in char_contents.items():
+            if cont:
+                state = self._get_count_state(file_path, cont, exclude_pattern, is_skip_dialogues=True)
+                char_counts[speaker] = state
+            else:
+                # 空の場合は 0 クリアした State を入れる
+                char_counts[speaker] = CountState(file_name=file_path)
+        return char_counts
+
     
     def _get_exclude_togakis(self, content: str) -> str:
         # 不要行削除
-        tmp_cond = self._exclude_head_of_line(content)
+        tmp_cond1 = self._exclude_head_of_line(content)
         # //指示行も削除
-        tmp_cond = self._exclude_direction_headline(tmp_cond)
+        tmp_cond2 = self._exclude_direction_headline(tmp_cond1)
         # （）文字の削除
-        tmp_cond = self._exclude_parentheses_chars(tmp_cond)
+        tmp_cond3 = self._exclude_parentheses_chars(tmp_cond2)
+        # 括弧記号の削除
+        tmp_cond4 = self._exclude_parentheses_marks(tmp_cond3)
         # 最後に空白削除
-        return self._exclude_spaces(tmp_cond)
+        return self._exclude_spaces(tmp_cond4)
     
     def _get_exclude_all_marks(self, content: str, exclude_pattern) -> str:
         """ト書きと句読点、記号除去する"""
         # 不要行削除
-        tmp_cond = self._exclude_head_of_line(content)
+        tmp_cond0 = self._exclude_head_of_line(content)
         # //指示行も削除
-        tmp_cond = self._exclude_direction_headline(tmp_cond)
+        tmp_cond1 = self._exclude_direction_headline(tmp_cond0)
         # （）文字の削除
-        tmp_cond = self._exclude_parentheses_chars(tmp_cond)
+        tmp_cond2 = self._exclude_parentheses_chars(tmp_cond1)
         # 句読点の削除
-        tmp_cond = self._exclude_punctuations(tmp_cond)
+        tmp_cond3 = self._exclude_punctuations(tmp_cond2)
+        # 括弧記号の削除
+        tmp_cond4 = self._exclude_parentheses_marks(tmp_cond3)
         # 指定文字の削除
-        tmp_cond = self._exclude_special_patterns(tmp_cond, exclude_pattern)
+        tmp_cond5 = self._exclude_special_patterns(tmp_cond4, exclude_pattern)
         # 最後に空白削除
-        return self._exclude_spaces(tmp_cond)
+        return self._exclude_spaces(tmp_cond5)
 
-    def _get_exclue_pattern(self, exclue_chars: list) -> str:
+    def _get_exclude_pattern(self, exclude_chars: list) -> str:
         """記号除外用の正規表現パターン作成"""
         return "|".join(re.escape(char) for char in exclude_chars)
     
@@ -144,7 +209,12 @@ class CharCounter:
     
     def _exclude_punctuations(self, content: str) -> str:
         """句読点の削除"""
-        patterns = self._get_exclue_pattern(self.PUNCTUATIONS)
+        patterns = self._get_exclude_pattern(self.PUNCTUATIONS)
+        return self._exclude_special_patterns(content, patterns)
+
+    def _exclude_parentheses_marks(self, content: str) -> str:
+        """文中の括弧記号の除去"""
+        patterns = self._get_exclude_pattern(self.PARENTHESES)
         return self._exclude_special_patterns(content, patterns)
     
     def _exclude_special_patterns(self, content: str, exclude_pattern: str):
@@ -154,24 +224,38 @@ class CharCounter:
     def _exclude_spaces(self, content: str) -> str:
         """スペース、タブ、改行の削除"""
         return re.sub(r'\s', '', content)
-    
-    def _get_excluded_content_chars(self, content: str, exclude_pattern: str) -> str:
-        # 1. 不要行の削除
-        ex_linehead_cont = self._exclude_head_of_line(content)
 
-        # 2. 括弧（）で囲まれた部分の削除
-        ex_parentheses_cont = self._exclude_parentheses_chars(ex_linehead_cont)
+    def _aggregate_dialogues(self, state_list: list[CountState]) -> dict:
+        """
+        複数のStateからキャラクター別の文字数を集計して合算する
+        """
+        total_dialogues = defaultdict(lambda: {
+            'total': 0,
+            'exclude_space': 0,
+            'exclude_togaki': 0,
+            'exclude_marks': 0
+        })
 
-        # 3. 指定した特定の記号を除去
-        ex_patterns_cont = self._exclude_special_patterns(ex_parentheses_cont, exclude_pattern)
-                    
-        # 4. 最後にスペース・タブ・改行を削除
-        content_final = self._exclude_spaces(ex_patterns_cont)
+        for state in state_list:
+            if not state.dialogues:
+                continue
+            
+            for speaker, s in state.dialogues.items():
+                # 各項目の数値を加算
+                total_dialogues[speaker]['total'] += s.total
+                total_dialogues[speaker]['exclude_space'] += s.exclude_space
+                total_dialogues[speaker]['exclude_togaki'] += s.exclude_togaki
+                total_dialogues[speaker]['exclude_marks'] += s.exclude_marks
 
-        return content_final
-
-
-
+        # 最終的に CountState の辞書形式に変換して返す
+        result = {}
+        for speaker, counts in total_dialogues.items():
+            result[speaker] = CountState(
+                count_type=CountType.TOTAL,
+                file_name="Total (All Files)",
+                **counts
+            )
+        return result
 
 if __name__ == "__main__":
     # --- 設定 ---
