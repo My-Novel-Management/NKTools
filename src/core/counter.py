@@ -25,7 +25,7 @@ class CharCounter:
         self.save_dir = save_dir
 
     EXTENTIONS = ['*.txt', '*.md']
-    PUNCTUATIONS = ['、', '。', '.', ',']
+    PUNCTUATIONS = ['、', '。', '.', ',', '・']
     PARENTHESES = ['(', ')', '「', '」', '『', '』', '【', '】']
 
     def count_characters(self, output_file: str, exclude_chars: list):
