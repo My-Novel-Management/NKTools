@@ -54,6 +54,7 @@ def replace_onom_all_files(base_path: str="build"):
                     # 喘ぎ
                     tmp_content = replace_moan(TARGET_WORD, words_onom, tmp_content)
                     # オホ声
+                    tmp_content = replace_moan(TARGET_WORD_OHO, words_oho, tmp_content)
                     print(f"changed: {len(tmp_content)}")
                 # 上書き保存（または別名保存も可能）
                 output_path = file_path.replace('build', 'results')
